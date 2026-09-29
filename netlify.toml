@@ -7,7 +7,7 @@ redirects = []
 [functions."*"]
 
 [build]
-publish = "E:\\smart health ai new\\dist"
+publish = "dist"
 publishOrigin = "ui"
 commandOrigin = "ui"
 command = "npm run build"
