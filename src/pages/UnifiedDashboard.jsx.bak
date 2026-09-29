@@ -1,0 +1,195 @@
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { Panel, Badge, StatCard } from '../components/ui/index.js';
+import Icon from '../components/icons.jsx';
+import MedicalDisclaimer from '../components/MedicalDisclaimer.jsx';
+import PrototypeNotice from '../components/PrototypeNotice.jsx';
+import ProfileSwitcher from '../components/ProfileSwitcher.jsx';
+import UnifiedDataOverview from '../components/UnifiedDataOverview.jsx';
+import DiseaseRiskCard from '../components/DiseaseRiskCard.jsx';
+import DiseaseRiskDetail from '../components/DiseaseRiskDetail.jsx';
+import HealthDataEntry from '../components/HealthDataEntry.jsx';
+import { useAppData } from '../context/AppDataContext.jsx';
+import { buildProfileHealthSnapshot } from '../lib/healthAggregation.js';
+import { assessHealthRisks, diffAssessments } from '../lib/unifiedRiskEngine.js';
+
+export default function UnifiedDashboard() {
+  const appData = useAppData();
+  const {
+    activeProfileId,
+    activeProfile,
+    activeProfileRecords,
+    bloodTests,
+    geneticRecords,
+    conversations,
+    bioSignals,
+  } = appData;
+
+  const appStore = useMemo(
+    () => ({
+      bloodTests,
+      geneticRecords,
+      conversations,
+      bioSignals,
+    }),
+    [bloodTests, geneticRecords, conversations, bioSignals],
+  );
+
+  const snapshot = useMemo(() => {
+    return buildProfileHealthSnapshot({
+      profile: activeProfile,
+      records: activeProfileRecords,
+      appStore,
+    });
+  }, [activeProfile, activeProfileRecords, appStore]);
+
+  const currentAssessment = useMemo(() => {
+    return assessHealthRisks(snapshot);
+  }, [snapshot]);
+
+  const [lastAnalysis, setLastAnalysis] = useState(null);
+  const [diffReport, setDiffReport] = useState(null);
+  const [selectedDisease, setSelectedDisease] = useState(null);
+  const [statusMessage, setStatusMessage] = useState(null);
+
+  const prevProfileIdRef = useRef(activeProfileId);
+  useEffect(() => {
+    if (prevProfileIdRef.current !== activeProfileId) {
+      prevProfileIdRef.current = activeProfileId;
+      setLastAnalysis(currentAssessment);
+      setDiffReport(null);
+      setSelectedDisease(null);
+      setStatusMessage(null);
+    }
+  }, [activeProfileId, currentAssessment]);
+
+  useEffect(() => {
+    if (!lastAnalysis && currentAssessment) {
+      setLastAnalysis(currentAssessment);
+    }
+  }, [lastAnalysis, currentAssessment]);
+
+  const handleRerun = () => {
+    const baseline = lastAnalysis || currentAssessment;
+    const freshAssessment = assessHealthRisks(snapshot);
+    const diff = diffAssessments(baseline, freshAssessment);
+    setLastAnalysis(freshAssessment);
+    setDiffReport(diff);
+    setStatusMessage(
+      diff.summary.changedCount === 0
+        ? 'Analysis re-evaluated across all 8 models. No input metrics have changed; outputs remain strictly identical (deterministic).'
+        : `Analysis re-evaluated: ${diff.summary.changedCount} disease model(s) updated risk scores based on new inputs.`,
+    );
+  };
+  const highRiskDiseases = currentAssessment.diseases.filter(
+    (d) => d.applicable && (d.riskLevel === 'High' || d.riskLevel === 'Very High'),
+  );
+
+  return (
+    <>
+      <PrototypeNotice />
+
+      <Panel
+        title={`Unified Health & Risk Profile · ${activeProfile?.name ?? 'Patient'}`}
+        subtitle={`${activeProfile?.relationship ? `${activeProfile.relationship} · ` : ''}${activeProfile?.sex || 'Unknown'}, ${activeProfile?.age != null ? `${activeProfile.age} yrs` : 'age unrecorded'} · Deterministic multi-domain risk intelligence`}
+        aside={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Badge tone={activeProfile?.isPrimary ? 'info' : 'neutral'}>
+              {activeProfile?.isPrimary ? 'Primary profile' : 'Family member'}
+            </Badge>
+            <button type="button" className="action-button" onClick={handleRerun}>
+              <Icon name="refresh" size={14} /> Re-run AI Analysis
+            </button>
+          </div>
+        }
+      >
+        <div className="stat-grid">
+          <StatCard
+            label="Model coverage"
+            value={`${currentAssessment.summary.coveragePct}%`}
+            note={`${currentAssessment.summary.inputsPresent} of ${currentAssessment.summary.inputsTotal} features present`}
+            tone={currentAssessment.summary.coveragePct >= 70 ? 'good' : 'warn'}
+          />
+          <StatCard
+            label="High-risk conditions"
+            value={highRiskDiseases.length}
+            note={highRiskDiseases.length ? highRiskDiseases.map((d) => d.name).join(', ') : 'None detected'}
+            tone={highRiskDiseases.length > 0 ? 'bad' : 'good'}
+          />
+          <StatCard
+            label="Prevention actions"
+            value={currentAssessment.summary.actionItemsCount}
+            note="Evidence-linked lifestyle & clinical tasks"
+            tone="info"
+          />
+          <StatCard
+            label="Aggregated data points"
+            value={snapshot.counts.labs + snapshot.counts.vitals + snapshot.counts.genes + snapshot.counts.observations}
+            note={`${snapshot.counts.labs} labs · ${snapshot.counts.vitals} vitals · ${snapshot.counts.genes} variants · ${snapshot.counts.observations} chat insights`}
+            tone="neutral"
+          />
+        </div>
+
+        {statusMessage && (
+          <div
+            className="notice-banner"
+            style={{
+              marginTop: 14,
+              padding: '10px 14px',
+              borderRadius: 'var(--radius)',
+              background: diffReport && diffReport.summary.changedCount > 0 ? 'var(--warn-subtle)' : 'var(--accent-subtle)',
+              border: `1px solid ${diffReport && diffReport.summary.changedCount > 0 ? 'var(--warn)' : 'var(--primary)'}`,
+              color: 'var(--ink-100)',
+              fontSize: '13px',
+            }}
+          >
+            <strong>Analysis Run:</strong> {statusMessage}
+          </div>
+        )}
+
+        {diffReport && diffReport.summary.changedCount > 0 && (
+          <div className="diff-box" style={{ marginTop: 12, padding: 12, background: 'var(--surface-sunken)', borderRadius: 8 }}>
+            <strong style={{ fontSize: 13 }}>Detected changes between analysis snapshots:</strong>
+            <ul style={{ margin: '6px 0 0 16px', padding: 0, fontSize: 12 }}>
+              {diffReport.changed.map((c) => (
+                <li key={c.diseaseKey}>
+                  <strong>{c.diseaseName}:</strong> risk shifted from {c.from.riskPct}% ({c.from.riskLevel}) to {c.to.riskPct}% ({c.to.riskLevel}) — delta {c.deltaRiskPct > 0 ? `+${c.deltaRiskPct}` : c.deltaRiskPct}%.
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Panel>
+
+      <ProfileSwitcher activeProfile={activeProfile} />
+
+      <UnifiedDataOverview snapshot={snapshot} />
+
+      <Panel
+        title="Disease Risk & Progression Models"
+        subtitle="8 explainable deterministic models evaluate baseline, biomarkers, daily biosignals, genetics, and chat insights. Missing inputs are tracked as gaps rather than zero risk."
+        aside={<Badge tone="neutral">8 Conditions Modeled</Badge>}
+      >
+        <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+          {currentAssessment.diseases.map((disease) => (
+            <DiseaseRiskCard
+              key={disease.key}
+              disease={disease}
+              onSelect={(d) => setSelectedDisease(d)}
+            />
+          ))}
+        </div>
+      </Panel>
+
+      <HealthDataEntry profile={activeProfile} records={activeProfileRecords} />
+
+      {selectedDisease && (
+        <DiseaseRiskDetail
+          disease={selectedDisease}
+          onClose={() => setSelectedDisease(null)}
+        />
+      )}
+
+      <MedicalDisclaimer />
+    </>
+  );
+}
